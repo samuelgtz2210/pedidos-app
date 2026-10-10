@@ -41,6 +41,7 @@ async function Menu({ params }: Props) {
 
   return (
     <Tienda
+      slug ={slug} 
       nombre={negocio.nombre}
       categorias={categorias ?? []}
       productos={productos ?? []}
