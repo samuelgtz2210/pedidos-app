@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import Tienda from "./Tienda";
 
 type Props = { params: Promise<{ negocio: string }> };
 
@@ -39,29 +40,10 @@ async function Menu({ params }: Props) {
     .order("orden");
 
   return (
-    <>
-      <h1 className="mb-6 text-3xl font-bold">{negocio.nombre}</h1>
-
-      {categorias?.map((cat) => (
-        <section key={cat.id} className="mb-8">
-          <h2 className="mb-3 text-xl font-semibold">{cat.nombre}</h2>
-          <ul className="divide-y rounded-lg border">
-            {productos
-              ?.filter((p) => p.categoria_id === cat.id)
-              .map((p) => (
-                <li key={p.id} className="flex justify-between gap-4 p-4">
-                  <div>
-                    <p className="font-medium">{p.nombre}</p>
-                    {p.descripcion && (
-                      <p className="text-sm text-gray-500">{p.descripcion}</p>
-                    )}
-                  </div>
-                  <p className="font-medium">${p.precio}</p>
-                </li>
-              ))}
-          </ul>
-        </section>
-      ))}
-    </>
+    <Tienda
+      nombre={negocio.nombre}
+      categorias={categorias ?? []}
+      productos={productos ?? []}
+    />
   );
 }
