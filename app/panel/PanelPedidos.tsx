@@ -260,6 +260,11 @@ export default function PanelPedidos({
                   {p.pedido_items.map((i, idx) => (
                     <li key={idx}>
                       {i.cantidad} × {i.nombre}
+                      {i.pedido_item_opciones.map((o, k) => (
+                        <span key={k} className="block text-sm text-gray-500">
+                          {o.grupo}: {o.nombre}
+                        </span>
+                      ))}
                     </li>
                   ))}
                 </ul>

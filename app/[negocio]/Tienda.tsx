@@ -3,13 +3,30 @@
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
-type Categoria = { id: string; nombre: string };
-type Producto = {
+export type Opcion = { id: string; nombre: string; precio_extra: number };
+export type Grupo = {
+  id: string;
+  nombre: string;
+  minimo: number;
+  maximo: number;
+  opciones: Opcion[];
+};
+export type Producto = {
   id: string;
   categoria_id: string | null;
   nombre: string;
   descripcion: string | null;
   precio: number;
+  grupos: Grupo[];
+};
+
+type Categoria = { id: string; nombre: string };
+type OpcionElegida = Opcion & { grupo: string };
+type Linea = {
+  clave: string;
+  producto: Producto;
+  opciones: OpcionElegida[];
+  cantidad: number;
 };
 
 const formatoMoneda = new Intl.NumberFormat("es-MX", {
@@ -19,6 +36,17 @@ const formatoMoneda = new Intl.NumberFormat("es-MX", {
 
 function dinero(valor: number) {
   return formatoMoneda.format(valor);
+}
+
+function claveLinea(productoId: string, opciones: { id: string }[]) {
+  return `${productoId}|${opciones
+    .map((o) => o.id)
+    .sort()
+    .join(",")}`;
+}
+
+function precioUnitario(l: Linea) {
+  return l.producto.precio + l.opciones.reduce((s, o) => s + o.precio_extra, 0);
 }
 
 export default function Tienda({
@@ -32,7 +60,11 @@ export default function Tienda({
   categorias: Categoria[];
   productos: Producto[];
 }) {
-  const [carrito, setCarrito] = useState<Record<string, number>>({});
+  const [lineas, setLineas] = useState<Linea[]>([]);
+  const [configurando, setConfigurando] = useState<Producto | null>(null);
+  const [seleccion, setSeleccion] = useState<Record<string, string[]>>({});
+  const [errorOpciones, setErrorOpciones] = useState("");
+
   const [clienteNombre, setClienteNombre] = useState("");
   const [telefono, setTelefono] = useState("");
   const [tipoEntrega, setTipoEntrega] = useState<"domicilio" | "recoger">(
@@ -48,30 +80,86 @@ export default function Tienda({
     tipo: "domicilio" | "recoger";
   } | null>(null);
 
-  function agregar(id: string) {
-    setCarrito((c) => ({ ...c, [id]: (c[id] ?? 0) + 1 }));
-  }
-
-  function quitar(id: string) {
-    setCarrito((c) => {
-      const copia = { ...c };
-      const nueva = (copia[id] ?? 0) - 1;
-      if (nueva <= 0) delete copia[id];
-      else copia[id] = nueva;
-      return copia;
+  function agregarLinea(producto: Producto, opciones: OpcionElegida[]) {
+    const clave = claveLinea(producto.id, opciones);
+    setLineas((ls) => {
+      const existe = ls.find((l) => l.clave === clave);
+      if (existe) {
+        return ls.map((l) =>
+          l.clave === clave ? { ...l, cantidad: l.cantidad + 1 } : l
+        );
+      }
+      return [...ls, { clave, producto, opciones, cantidad: 1 }];
     });
   }
 
-  const lineas = productos
-    .filter((p) => carrito[p.id])
-    .map((p) => ({
-      ...p,
-      precio: Number(p.precio),
-      cantidad: carrito[p.id],
-    }));
+  function cambiarCantidad(clave: string, delta: number) {
+    setLineas((ls) =>
+      ls
+        .map((l) =>
+          l.clave === clave ? { ...l, cantidad: l.cantidad + delta } : l
+        )
+        .filter((l) => l.cantidad > 0)
+    );
+  }
 
-  const total = lineas.reduce((suma, l) => suma + l.precio * l.cantidad, 0);
-  const totalArticulos = lineas.reduce((suma, l) => suma + l.cantidad, 0);
+  function cantidadDe(productoId: string) {
+    return lineas
+      .filter((l) => l.producto.id === productoId)
+      .reduce((s, l) => s + l.cantidad, 0);
+  }
+
+  function pulsarAgregar(p: Producto) {
+    if (p.grupos.length === 0) {
+      agregarLinea(p, []);
+      return;
+    }
+    setSeleccion({});
+    setErrorOpciones("");
+    setConfigurando(p);
+  }
+
+  function elegirOpcion(grupo: Grupo, opcionId: string) {
+    setErrorOpciones("");
+    setSeleccion((s) => {
+      const actuales = s[grupo.id] ?? [];
+      if (grupo.maximo === 1) return { ...s, [grupo.id]: [opcionId] };
+      if (actuales.includes(opcionId)) {
+        return { ...s, [grupo.id]: actuales.filter((id) => id !== opcionId) };
+      }
+      if (actuales.length >= grupo.maximo) return s;
+      return { ...s, [grupo.id]: [...actuales, opcionId] };
+    });
+  }
+
+  function confirmarOpciones() {
+    if (!configurando) return;
+    for (const g of configurando.grupos) {
+      const n = (seleccion[g.id] ?? []).length;
+      if (n < g.minimo) {
+        setErrorOpciones(`Falta elegir: ${g.nombre}.`);
+        return;
+      }
+    }
+    const elegidas = configurando.grupos.flatMap((g) =>
+      g.opciones
+        .filter((o) => (seleccion[g.id] ?? []).includes(o.id))
+        .map((o) => ({ ...o, grupo: g.nombre }))
+    );
+    agregarLinea(configurando, elegidas);
+    setConfigurando(null);
+  }
+
+  const total = lineas.reduce((s, l) => s + precioUnitario(l) * l.cantidad, 0);
+  const totalArticulos = lineas.reduce((s, l) => s + l.cantidad, 0);
+
+  const extrasSeleccion = configurando
+    ? configurando.grupos
+        .flatMap((g) =>
+          g.opciones.filter((o) => (seleccion[g.id] ?? []).includes(o.id))
+        )
+        .reduce((s, o) => s + o.precio_extra, 0)
+    : 0;
 
   async function hacerPedido() {
     setError("");
@@ -95,7 +183,11 @@ export default function Tienda({
       p_direccion: tipoEntrega === "domicilio" ? direccion.trim() : null,
       p_metodo_pago: "efectivo",
       p_notas: notas.trim() || null,
-      p_items: lineas.map((l) => ({ producto_id: l.id, cantidad: l.cantidad })),
+      p_items: lineas.map((l) => ({
+        producto_id: l.producto.id,
+        cantidad: l.cantidad,
+        opciones: l.opciones.map((o) => o.id),
+      })),
     });
     setEnviando(false);
 
@@ -110,7 +202,7 @@ export default function Tienda({
       total: Number(data[0].r_total),
       tipo: tipoEntrega,
     });
-    setCarrito({});
+    setLineas([]);
   }
 
   if (confirmacion) {
@@ -153,7 +245,8 @@ export default function Tienda({
             {productos
               .filter((p) => p.categoria_id === cat.id)
               .map((p) => {
-                const cantidad = carrito[p.id] ?? 0;
+                const cantidad = cantidadDe(p.id);
+                const sinOpciones = p.grupos.length === 0;
                 return (
                   <li
                     key={p.id}
@@ -167,21 +260,16 @@ export default function Tienda({
                         </p>
                       )}
                       <p className="mt-1 text-sm font-medium">
-                        {dinero(Number(p.precio))}
+                        {dinero(p.precio)}
                       </p>
                     </div>
 
-                    {cantidad === 0 ? (
-                      <button
-                        onClick={() => agregar(p.id)}
-                        className="rounded-full bg-black px-4 py-2 text-sm text-white"
-                      >
-                        Agregar
-                      </button>
-                    ) : (
+                    {sinOpciones && cantidad > 0 ? (
                       <div className="flex items-center gap-3">
                         <button
-                          onClick={() => quitar(p.id)}
+                          onClick={() =>
+                            cambiarCantidad(claveLinea(p.id, []), -1)
+                          }
                           className="h-8 w-8 rounded-full border text-lg"
                           aria-label="Quitar uno"
                         >
@@ -189,12 +277,28 @@ export default function Tienda({
                         </button>
                         <span className="w-4 text-center">{cantidad}</span>
                         <button
-                          onClick={() => agregar(p.id)}
+                          onClick={() =>
+                            cambiarCantidad(claveLinea(p.id, []), 1)
+                          }
                           className="h-8 w-8 rounded-full border text-lg"
                           aria-label="Agregar uno"
                         >
                           +
                         </button>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-end gap-1">
+                        <button
+                          onClick={() => pulsarAgregar(p)}
+                          className="rounded-full bg-black px-4 py-2 text-sm text-white"
+                        >
+                          Agregar
+                        </button>
+                        {cantidad > 0 && (
+                          <span className="text-xs text-gray-500">
+                            {cantidad} en tu pedido
+                          </span>
+                        )}
                       </div>
                     )}
                   </li>
@@ -211,13 +315,41 @@ export default function Tienda({
         ) : (
           <>
             <div className="rounded-lg border p-4">
-              <ul className="space-y-2">
+              <ul className="space-y-4">
                 {lineas.map((l) => (
-                  <li key={l.id} className="flex justify-between gap-4">
-                    <span>
-                      {l.cantidad} × {l.nombre}
-                    </span>
-                    <span>{dinero(l.precio * l.cantidad)}</span>
+                  <li
+                    key={l.clave}
+                    className="flex items-start justify-between gap-3"
+                  >
+                    <div>
+                      <p>{l.producto.nombre}</p>
+                      {l.opciones.map((o) => (
+                        <p key={o.id} className="text-sm text-gray-500">
+                          {o.grupo}: {o.nombre}
+                          {o.precio_extra > 0
+                            ? ` (+${dinero(o.precio_extra)})`
+                            : ""}
+                        </p>
+                      ))}
+                      <div className="mt-2 flex items-center gap-3">
+                        <button
+                          onClick={() => cambiarCantidad(l.clave, -1)}
+                          className="h-7 w-7 rounded-full border"
+                          aria-label="Quitar uno"
+                        >
+                          −
+                        </button>
+                        <span className="w-4 text-center">{l.cantidad}</span>
+                        <button
+                          onClick={() => cambiarCantidad(l.clave, 1)}
+                          className="h-7 w-7 rounded-full border"
+                          aria-label="Agregar uno"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                    <span>{dinero(precioUnitario(l) * l.cantidad)}</span>
                   </li>
                 ))}
               </ul>
@@ -248,9 +380,7 @@ export default function Tienda({
                   type="button"
                   onClick={() => setTipoEntrega("domicilio")}
                   className={`flex-1 rounded-lg border p-3 ${
-                    tipoEntrega === "domicilio"
-                      ? "bg-black text-white"
-                      : ""
+                    tipoEntrega === "domicilio" ? "bg-black text-white" : ""
                   }`}
                 >
                   A domicilio
@@ -305,7 +435,7 @@ export default function Tienda({
         )}
       </section>
 
-      {totalArticulos > 0 && (
+      {totalArticulos > 0 && !configurando && (
         <a
           href="#pedido"
           className="fixed bottom-4 left-1/2 flex w-[calc(100%-2rem)] max-w-2xl -translate-x-1/2 justify-between rounded-full bg-black px-6 py-4 text-white"
@@ -313,6 +443,86 @@ export default function Tienda({
           <span>Ver pedido ({totalArticulos})</span>
           <span>{dinero(total)}</span>
         </a>
+      )}
+
+      {configurando && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 sm:items-center"
+          onClick={() => setConfigurando(null)}
+        >
+          <div
+            className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-t-2xl bg-white p-5 text-black sm:rounded-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-xl font-bold">{configurando.nombre}</h3>
+            {configurando.descripcion && (
+              <p className="text-sm text-gray-500">
+                {configurando.descripcion}
+              </p>
+            )}
+
+            {configurando.grupos.map((g) => (
+              <fieldset key={g.id} className="mt-5">
+                <legend className="font-semibold">{g.nombre}</legend>
+                <p className="mb-2 text-sm text-gray-500">
+                  {g.minimo >= 1 ? "Obligatorio" : "Opcional"}
+                  {g.maximo > 1 ? ` · hasta ${g.maximo}` : ""}
+                </p>
+                <div className="space-y-2">
+                  {g.opciones.map((o) => {
+                    const actuales = seleccion[g.id] ?? [];
+                    const elegida = actuales.includes(o.id);
+                    const lleno =
+                      g.maximo > 1 && !elegida && actuales.length >= g.maximo;
+                    return (
+                      <label
+                        key={o.id}
+                        className={`flex items-center justify-between gap-3 rounded-lg border p-3 ${
+                          lleno ? "opacity-50" : ""
+                        }`}
+                      >
+                        <span className="flex items-center gap-3">
+                          <input
+                            type={g.maximo === 1 ? "radio" : "checkbox"}
+                            name={g.id}
+                            checked={elegida}
+                            disabled={lleno}
+                            onChange={() => elegirOpcion(g, o.id)}
+                          />
+                          {o.nombre}
+                        </span>
+                        <span className="text-sm text-gray-500">
+                          {o.precio_extra > 0
+                            ? `+${dinero(o.precio_extra)}`
+                            : "Incluido"}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+            ))}
+
+            {errorOpciones && (
+              <p className="mt-4 text-red-600">{errorOpciones}</p>
+            )}
+
+            <div className="mt-6 flex gap-2">
+              <button
+                onClick={() => setConfigurando(null)}
+                className="flex-1 rounded-full border p-3"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmarOpciones}
+                className="flex-[2] rounded-full bg-black p-3 text-white"
+              >
+                Agregar · {dinero(configurando.precio + extrasSeleccion)}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );
