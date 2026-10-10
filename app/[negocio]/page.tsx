@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import Tienda from "./Tienda";
+import { connection } from "next/server";
 
 type Props = { params: Promise<{ negocio: string }> };
 
@@ -16,6 +17,7 @@ export default function PaginaNegocio({ params }: Props) {
 }
 
 async function Menu({ params }: Props) {
+  await connection();
   const { negocio: slug } = await params;
   const supabase = await createClient();
 
