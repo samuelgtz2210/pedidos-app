@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 
 export type Opcion = { id: string; nombre: string; precio_extra: number };
 export type Grupo = {
@@ -70,11 +69,15 @@ export default function Tienda({
   const [tipoEntrega, setTipoEntrega] = useState<"domicilio" | "recoger">(
     "domicilio"
   );
+  const [metodoPago, setMetodoPago] = useState<"efectivo" | "tarjeta">(
+    "efectivo"
+  );
   const [direccion, setDireccion] = useState("");
   const [notas, setNotas] = useState("");
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState("");
   const [confirmacion, setConfirmacion] = useState<{
+    id: string;
     numero: number;
     total: number;
     tipo: "domicilio" | "recoger";
@@ -174,35 +177,49 @@ export default function Tienda({
     }
 
     setEnviando(true);
-    const supabase = createClient();
-    const { data, error: errorRpc } = await supabase.rpc("crear_pedido", {
-      p_slug: slug,
-      p_nombre: clienteNombre.trim(),
-      p_telefono: telefono.trim(),
-      p_tipo_entrega: tipoEntrega,
-      p_direccion: tipoEntrega === "domicilio" ? direccion.trim() : null,
-      p_metodo_pago: "efectivo",
-      p_notas: notas.trim() || null,
-      p_items: lineas.map((l) => ({
-        producto_id: l.producto.id,
-        cantidad: l.cantidad,
-        opciones: l.opciones.map((o) => o.id),
-      })),
-    });
-    setEnviando(false);
+    try {
+      const respuesta = await fetch("/api/pedidos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          slug,
+          nombre: clienteNombre.trim(),
+          telefono: telefono.trim(),
+          tipoEntrega,
+          direccion: tipoEntrega === "domicilio" ? direccion.trim() : "",
+          metodoPago,
+          notas: notas.trim(),
+          items: lineas.map((l) => ({
+            producto_id: l.producto.id,
+            cantidad: l.cantidad,
+            opciones: l.opciones.map((o) => o.id),
+          })),
+        }),
+      });
+      const datos = await respuesta.json();
 
-    if (errorRpc || !data || data.length === 0) {
-      console.error(errorRpc);
-      setError("No pudimos enviar tu pedido. Intenta de nuevo.");
-      return;
+      if (!respuesta.ok) {
+        setError(datos.error ?? "No pudimos enviar tu pedido. Intenta de nuevo.");
+        return;
+      }
+
+      if (datos.urlPago) {
+        window.location.href = datos.urlPago;
+        return;
+      }
+
+      setConfirmacion({
+        id: datos.id,
+        numero: Number(datos.numero),
+        total: Number(datos.total),
+        tipo: tipoEntrega,
+      });
+      setLineas([]);
+    } catch {
+      setError("No pudimos enviar tu pedido. Revisa tu conexión e intenta de nuevo.");
+    } finally {
+      setEnviando(false);
     }
-
-    setConfirmacion({
-      numero: Number(data[0].r_numero),
-      total: Number(data[0].r_total),
-      tipo: tipoEntrega,
-    });
-    setLineas([]);
   }
 
   if (confirmacion) {
@@ -224,9 +241,15 @@ export default function Tienda({
             ? "al recibir tu pedido."
             : "al recoger tu pedido."}
         </p>
+        <a
+          href={`/pedido/${confirmacion.id}`}
+          className="mt-6 inline-block rounded-full bg-black px-6 py-3 text-white"
+        >
+          Ver el estado de mi pedido
+        </a>
         <button
           onClick={() => setConfirmacion(null)}
-          className="mt-6 rounded-full bg-black px-6 py-3 text-white"
+          className="ml-2 mt-6 rounded-full border px-6 py-3"
         >
           Hacer otro pedido
         </button>
@@ -414,12 +437,38 @@ export default function Tienda({
                 className="w-full rounded-lg border p-3"
               />
 
-              <p className="text-sm text-gray-500">
-                Forma de pago: efectivo{" "}
-                {tipoEntrega === "domicilio"
-                  ? "al recibir tu pedido."
-                  : "al recoger tu pedido."}
-              </p>
+              <div>
+                <p className="mb-2 text-sm font-medium">Forma de pago</p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setMetodoPago("efectivo")}
+                    className={`flex-1 rounded-lg border p-3 ${
+                      metodoPago === "efectivo" ? "bg-black text-white" : ""
+                    }`}
+                  >
+                    Efectivo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMetodoPago("tarjeta")}
+                    className={`flex-1 rounded-lg border p-3 ${
+                      metodoPago === "tarjeta" ? "bg-black text-white" : ""
+                    }`}
+                  >
+                    Tarjeta
+                  </button>
+                </div>
+                <p className="mt-2 text-sm text-gray-500">
+                  {metodoPago === "efectivo"
+                    ? `Pagas en efectivo ${
+                        tipoEntrega === "domicilio"
+                          ? "al recibir tu pedido."
+                          : "al recoger tu pedido."
+                      }`
+                    : "Pagas ahora de forma segura con Mercado Pago."}
+                </p>
+              </div>
 
               {error && <p className="text-red-600">{error}</p>}
 
@@ -428,7 +477,11 @@ export default function Tienda({
                 disabled={enviando}
                 className="w-full rounded-full bg-black p-4 text-white disabled:opacity-50"
               >
-                {enviando ? "Enviando..." : `Hacer pedido · ${dinero(total)}`}
+                {enviando
+                  ? "Enviando..."
+                  : metodoPago === "tarjeta"
+                    ? `Pagar con tarjeta · ${dinero(total)}`
+                    : `Hacer pedido · ${dinero(total)}`}
               </button>
             </div>
           </>

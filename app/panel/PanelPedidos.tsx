@@ -79,6 +79,7 @@ export default function PanelPedidos({
       .from("pedidos")
       .select(COLUMNAS_PEDIDO)
       .eq("negocio_id", negocioId)
+      .neq("estado", "por_pagar")
       .order("creado_en", { ascending: false })
       .limit(50);
     if (data) setPedidos(data as unknown as Pedido[]);
@@ -96,7 +97,13 @@ export default function PanelPedidos({
           filter: `negocio_id=eq.${negocioId}`,
         },
         (payload) => {
-          if (payload.eventType === "INSERT" && audioRef.current) {
+          const nuevo = payload.new as { estado?: string; metodo_pago?: string };
+          const llegoPedido =
+            (payload.eventType === "INSERT" && nuevo.estado === "nuevo") ||
+            (payload.eventType === "UPDATE" &&
+              nuevo.estado === "nuevo" &&
+              nuevo.metodo_pago === "tarjeta");
+          if (llegoPedido && audioRef.current) {
             sonar(audioRef.current);
           }
           recargar();

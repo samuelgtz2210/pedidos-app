@@ -45,6 +45,7 @@ async function Panel() {
     .from("pedidos")
     .select(COLUMNAS_PEDIDO)
     .eq("negocio_id", membresia.negocio_id)
+    .neq("estado", "por_pagar")
     .order("creado_en", { ascending: false })
     .limit(50);
 
