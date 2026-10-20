@@ -1,5 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { geocodificar } from "@/lib/geocodificar";
+import {
+  calcularDistancia,
+  redondearHaciaArriba,
+  costoEnvio,
+  enlaceGoogleMaps,
+} from "@/lib/distancia";
 
 type ItemEntrada = {
   producto_id: string;
@@ -25,6 +32,12 @@ function leerItems(valor: unknown): ItemEntrada[] {
   });
 }
 
+// Valida que el teléfono tenga 10 dígitos (México)
+function validarTelefono(telefono: string): boolean {
+  const digitos = telefono.replace(/\D/g, "");
+  return digitos.length === 10;
+}
+
 export async function POST(request: NextRequest) {
   let cuerpo: Record<string, unknown>;
   try {
@@ -43,6 +56,93 @@ export async function POST(request: NextRequest) {
   const metodoPago = cuerpo.metodoPago === "tarjeta" ? "tarjeta" : "efectivo";
   const items = leerItems(cuerpo.items);
 
+  // Validaciones básicas
+  if (!nombre || !telefono) {
+    return NextResponse.json(
+      { error: "Faltan tu nombre o teléfono." },
+      { status: 400 }
+    );
+  }
+
+  if (!validarTelefono(telefono)) {
+    return NextResponse.json(
+      { error: "Tu teléfono debe tener 10 dígitos." },
+      { status: 400 }
+    );
+  }
+
+  if (tipoEntrega === "domicilio" && !direccion) {
+    return NextResponse.json(
+      { error: "Falta tu dirección de entrega." },
+      { status: 400 }
+    );
+  }
+
+  let costoEnvioCalculado = 0;
+  let latDestino: number | null = null;
+  let lngDestino: number | null = null;
+  let enlaceMaps: string | null = null;
+
+  // Si es domicilio, calcula distancia y envío
+  if (tipoEntrega === "domicilio") {
+    // Geocodifica la dirección
+    const coordenadas = await geocodificar(direccion);
+    if (!coordenadas) {
+      return NextResponse.json(
+        {
+          error:
+            "No encontramos tu dirección. Intenta escribirla de otra forma o verifica que esté completa.",
+        },
+        { status: 400 }
+      );
+    }
+
+    latDestino = coordenadas.lat;
+    lngDestino = coordenadas.lng;
+
+    // Origen: Parque Metropolitano, Zapopan
+    const latOrigen = 20.6295;
+    const lngOrigen = -103.3861;
+
+    // Calcula distancia
+    const distancia = await calcularDistancia(
+      latOrigen,
+      lngOrigen,
+      latDestino,
+      lngDestino
+    );
+    if (distancia === null) {
+      return NextResponse.json(
+        { error: "No pudimos calcular el envío. Intenta de nuevo." },
+        { status: 502 }
+      );
+    }
+
+    // Distancia máxima de entrega: 10 km
+    if (distancia > 10) {
+      return NextResponse.json(
+        {
+          error:
+            "Tu dirección está muy lejos. Entregamos hasta 10 km de Parque Metropolitano.",
+        },
+        { status: 400 }
+      );
+    }
+
+    // Redondea hacia arriba y calcula costo
+    const kmRedondeados = redondearHaciaArriba(distancia);
+    costoEnvioCalculado = costoEnvio(kmRedondeados);
+
+    // Genera enlace de Google Maps
+    enlaceMaps = enlaceGoogleMaps(
+      "Parque Metropolitano",
+      latOrigen,
+      lngOrigen,
+      latDestino,
+      lngDestino
+    );
+  }
+
   const supabase = createAdminClient();
 
   const { data, error } = await supabase.rpc("crear_pedido", {
@@ -54,7 +154,7 @@ export async function POST(request: NextRequest) {
     p_metodo_pago: metodoPago,
     p_notas: notas || null,
     p_items: items,
-    p_costo_envio: 0,
+    p_costo_envio: costoEnvioCalculado,
   });
 
   if (error || !data || data.length === 0) {
@@ -74,11 +174,23 @@ export async function POST(request: NextRequest) {
   const numero = Number(pedido.r_numero);
   const total = Number(pedido.r_total);
 
+  // Guarda coordenadas y enlace de maps
+  if (tipoEntrega === "domicilio" && latDestino && lngDestino) {
+    await supabase
+      .from("pedidos")
+      .update({
+        lat_destino: latDestino,
+        lng_destino: lngDestino,
+        enlace_google_maps: enlaceMaps,
+      })
+      .eq("id", id);
+  }
+
   if (metodoPago === "efectivo") {
     return NextResponse.json({ id, numero, total });
   }
 
-  // Pago con tarjeta: se crea el enlace de pago con los precios de la base de datos
+  // Pago con tarjeta: se crea el enlace de pago
   const token = process.env.MERCADOPAGO_ACCESS_TOKEN;
   if (!token) {
     console.error("Falta MERCADOPAGO_ACCESS_TOKEN");
@@ -93,12 +205,6 @@ export async function POST(request: NextRequest) {
     .select("nombre, cantidad, precio_unitario")
     .eq("pedido_id", id);
 
-  const { data: cabecera } = await supabase
-    .from("pedidos")
-    .select("costo_envio")
-    .eq("id", id)
-    .maybeSingle();
-
   const itemsMp = (
     (filas ?? []) as { nombre: string; cantidad: number; precio_unitario: number }[]
   ).map((f) => ({
@@ -108,12 +214,11 @@ export async function POST(request: NextRequest) {
     currency_id: "MXN",
   }));
 
-  const envio = Number(cabecera?.costo_envio ?? 0);
-  if (envio > 0) {
+  if (costoEnvioCalculado > 0) {
     itemsMp.push({
       title: "Envío",
       quantity: 1,
-      unit_price: envio,
+      unit_price: costoEnvioCalculado,
       currency_id: "MXN",
     });
   }

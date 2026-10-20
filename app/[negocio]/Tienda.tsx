@@ -164,11 +164,17 @@ export default function Tienda({
         .reduce((s, o) => s + o.precio_extra, 0)
     : 0;
 
-  async function hacerPedido() {
+    async function hacerPedido() {
     setError("");
 
     if (!clienteNombre.trim() || !telefono.trim()) {
       setError("Escribe tu nombre y tu teléfono.");
+      return;
+    }
+
+    const digitos = telefono.replace(/\D/g, "");
+    if (digitos.length !== 10) {
+      setError("Tu teléfono debe tener 10 dígitos.");
       return;
     }
     if (tipoEntrega === "domicilio" && !direccion.trim()) {
