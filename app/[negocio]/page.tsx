@@ -45,9 +45,9 @@ async function Menu({ params }: Props) {
   const { negocio: slug } = await params;
   const supabase = await createClient();
 
-  const { data: negocio } = await supabase
+    const { data: negocio } = await supabase
     .from("negocios")
-    .select("id, nombre")
+    .select("id, nombre, tarifa_envio")
     .eq("slug", slug)
     .maybeSingle();
 
@@ -101,6 +101,7 @@ async function Menu({ params }: Props) {
       nombre={negocio.nombre}
       categorias={categorias ?? []}
       productos={productos}
+      tarifaEnvio={Number(negocio.tarifa_envio ?? 0)}
     />
   );
 }
